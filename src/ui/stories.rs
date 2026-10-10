@@ -521,13 +521,112 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
     let screen_w = screen.width();
     let screen_h = screen.height();
 
-    // Fixed WhatsApp Web style portrait card (9:16 aspect ratio, centered modal)
-    // Remains strictly fixed across text, photo, and video stories without jumping
-    let target_height = (screen_h - 48.0).clamp(460.0, 880.0);
-    let target_width = (target_height * (9.0 / 16.0)).round().clamp(360.0, 500.0);
+    // Determine intrinsic media aspect ratio (width / height)
+    let detected_aspect: Option<f32> = if is_video {
+        // 1. Decoded video frame
+        let frame_aspect = video_status
+            .as_ref()
+            .and_then(|vs| vs.frame.as_ref())
+            .and_then(|frame| {
+                let sz = frame.size_vec2();
+                if sz.x > 0.0 && sz.y > 0.0 {
+                    Some(sz.x / sz.y)
+                } else {
+                    None
+                }
+            });
 
-    let card_width = target_width.min(screen_w - 32.0);
-    let card_height = target_height.min(screen_h - 40.0);
+        // 2. Video thumbnail if frame not yet ready
+        frame_aspect.or_else(|| {
+            current_item.thumbnail.as_ref().and_then(|thumb_bytes| {
+                image::load_from_memory(thumb_bytes).ok().and_then(|img| {
+                    let (w, h) = (img.width() as f32, img.height() as f32);
+                    if w > 0.0 && h > 0.0 {
+                        Some(w / h)
+                    } else {
+                        None
+                    }
+                })
+            })
+        })
+    } else if is_image {
+        // 1. Image file header
+        let file_aspect = current_item.media_path.as_ref().and_then(|path_str| {
+            let path = std::path::Path::new(path_str);
+            if path.exists() {
+                image::image_dimensions(path).ok().and_then(|(w, h)| {
+                    if w > 0 && h > 0 {
+                        Some(w as f32 / h as f32)
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        });
+
+        // 2. Image thumbnail
+        file_aspect.or_else(|| {
+            current_item.thumbnail.as_ref().and_then(|thumb_bytes| {
+                image::load_from_memory(thumb_bytes).ok().and_then(|img| {
+                    let (w, h) = (img.width() as f32, img.height() as f32);
+                    if w > 0.0 && h > 0.0 {
+                        Some(w / h)
+                    } else {
+                        None
+                    }
+                })
+            })
+        })
+    } else {
+        None
+    };
+
+    // Responsive story card sizing based on screen space and content aspect ratio.
+    // Allows landscape and square media to be spacious, crisp, and prominent on desktop.
+    let pad_x = if screen_w >= 850.0 { 64.0 } else { 20.0 };
+    let max_card_w = (screen_w - pad_x * 2.0).clamp(340.0, 1150.0);
+    let max_card_h = (screen_h - 48.0).clamp(380.0, 960.0);
+
+    let (target_w, target_h) = match detected_aspect {
+        Some(aspect) if aspect >= 1.05 => {
+            // Landscape media (e.g. 16:9, 4:3, 3:2):
+            let aspect = aspect.clamp(0.4, 2.5);
+            let by_height_w = max_card_h * aspect;
+            if by_height_w <= max_card_w {
+                (by_height_w, max_card_h)
+            } else {
+                (max_card_w, max_card_w / aspect)
+            }
+        }
+        Some(aspect) if aspect >= 0.95 => {
+            // Square media (around 1:1):
+            let side = max_card_h.min(max_card_w).min(750.0);
+            (side, side)
+        }
+        Some(aspect) => {
+            // Portrait media (e.g. 9:16, 4:5, 3:4):
+            let aspect = aspect.clamp(0.4, 2.5);
+            let h = max_card_h.min(940.0);
+            let w = (h * aspect).min(max_card_w);
+            if w < 360.0 && max_card_w >= 360.0 {
+                (360.0, (360.0 / aspect).min(max_card_h))
+            } else {
+                (w, h)
+            }
+        }
+        None => {
+            // Text status: well-proportioned reading card
+            let h = max_card_h.min(840.0);
+            let w = (h * 0.60).clamp(380.0, 520.0).min(max_card_w);
+            let final_h = (w / 0.60).min(max_card_h);
+            (w, final_h)
+        }
+    };
+
+    let card_width = target_w.clamp(340.0, max_card_w).min(screen_w - 24.0);
+    let card_height = target_h.clamp(380.0, max_card_h).min(screen_h - 24.0);
 
     let card_rect = Rect::from_center_size(screen.center(), vec2(card_width, card_height));
     let close_rect = Rect::from_center_size(
@@ -543,6 +642,21 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
         Rect::NOTHING
     };
 
+    let show_arrows_outside = screen.width() > card_rect.width() + 90.0;
+    let (left_arrow_center, right_arrow_center) = if show_arrows_outside {
+        (
+            pos2(card_rect.left() - 38.0, card_rect.center().y),
+            pos2(card_rect.right() + 38.0, card_rect.center().y),
+        )
+    } else {
+        (
+            pos2(card_rect.left() + 28.0, card_rect.center().y),
+            pos2(card_rect.right() - 28.0, card_rect.center().y),
+        )
+    };
+    let left_arrow_rect = Rect::from_center_size(left_arrow_center, vec2(44.0, 44.0));
+    let right_arrow_rect = Rect::from_center_size(right_arrow_center, vec2(44.0, 44.0));
+
     let now = Instant::now();
     let pointer_pos = ctx.input(|i| i.pointer.interact_pos());
     let pointer_down = ctx.input(|i| i.pointer.primary_down());
@@ -554,6 +668,8 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
             if card_rect.contains(pos)
                 && !close_rect.contains(pos)
                 && !unsupported_btn_rect.contains(pos)
+                && !left_arrow_rect.contains(pos)
+                && !right_arrow_rect.contains(pos)
                 && pos.y <= card_rect.bottom() - 110.0
             {
                 if state.hold_started_at.is_none() {
@@ -587,6 +703,8 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
                     if card_rect.contains(pos)
                         && !close_rect.contains(pos)
                         && !unsupported_btn_rect.contains(pos)
+                        && !left_arrow_rect.contains(pos)
+                        && !right_arrow_rect.contains(pos)
                         && pos.y >= card_rect.top() + 70.0
                         && pos.y <= card_rect.bottom() - 110.0
                     {
@@ -677,13 +795,13 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
 
             // 1. Render Center Media or Text Content
             if let Some(text) = &current_item.text {
-                let content_rect = card_rect.shrink2(vec2(28.0, 80.0));
+                let content_rect = card_rect.shrink2(vec2(32.0, 80.0));
                 let font_size = if text.len() < 60 {
-                    28.0
+                    32.0
                 } else if text.len() < 140 {
-                    23.0
+                    25.0
                 } else {
-                    19.0
+                    20.0
                 };
                 let font_id = egui::FontId::proportional(font_size);
                 let galley = ui.painter().layout(
@@ -883,9 +1001,10 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
                     } else {
                         card_rect.bottom() - 156.0
                     };
-                    let cap_rect = Rect::from_min_size(
-                        pos2(card_rect.left() + 16.0, cap_y),
-                        vec2(card_width - 32.0, 44.0),
+                    let cap_width = (card_width - 32.0).min(640.0);
+                    let cap_rect = Rect::from_center_size(
+                        pos2(card_rect.center().x, cap_y + 22.0),
+                        vec2(cap_width, 44.0),
                     );
                     ui.painter().rect_filled(
                         cap_rect,
@@ -1100,9 +1219,10 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
                     }
 
                     // 6B. Bottom Reply Input Pill Bar
-                    let reply_bar_rect = Rect::from_min_size(
-                        pos2(card_rect.left() + 16.0, card_rect.bottom() - 56.0),
-                        vec2(card_width - 32.0, 44.0),
+                    let reply_bar_width = (card_width - 32.0).min(520.0);
+                    let reply_bar_rect = Rect::from_center_size(
+                        pos2(card_rect.center().x, card_rect.bottom() - 34.0),
+                        vec2(reply_bar_width, 44.0),
                     );
 
                     // Semi-transparent pill background
@@ -1256,74 +1376,68 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
                 egui::StrokeKind::Inside,
             );
 
-            // Floating side buttons for desktop navigation (❮ and ❯)
-            if screen.width() > card_rect.width() + 110.0 {
-                let left_arrow_rect = Rect::from_center_size(
-                    pos2(card_rect.left() - 40.0, card_rect.center().y),
-                    vec2(44.0, 44.0),
-                );
-                let right_arrow_rect = Rect::from_center_size(
-                    pos2(card_rect.right() + 40.0, card_rect.center().y),
-                    vec2(44.0, 44.0),
-                );
+            // Floating buttons for desktop navigation (❮ and ❯)
+            let left_btn_resp = ui.allocate_rect(left_arrow_rect, Sense::click());
+            let right_btn_resp = ui.allocate_rect(right_arrow_rect, Sense::click());
 
-                let left_btn_resp = ui.allocate_rect(left_arrow_rect, Sense::click());
-                let right_btn_resp = ui.allocate_rect(right_arrow_rect, Sense::click());
-
-                let left_bg = if left_btn_resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            let left_bg = if left_btn_resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                if show_arrows_outside {
                     Color32::from_white_alpha(50)
                 } else {
-                    Color32::from_white_alpha(20)
-                };
-                ui.painter()
-                    .circle_filled(left_arrow_rect.center(), 20.0, left_bg);
-                ui.painter().text(
-                    left_arrow_rect.center(),
-                    Align2::CENTER_CENTER,
-                    "❮",
-                    egui::FontId::proportional(18.0),
-                    Color32::WHITE,
-                );
-                if left_btn_resp.clicked() {
-                    app.actions.push(Action::PrevStory);
+                    Color32::from_black_alpha(220)
                 }
+            } else if show_arrows_outside {
+                Color32::from_white_alpha(20)
+            } else {
+                Color32::from_black_alpha(150)
+            };
+            ui.painter()
+                .circle_filled(left_arrow_rect.center(), 20.0, left_bg);
+            ui.painter().text(
+                left_arrow_rect.center(),
+                Align2::CENTER_CENTER,
+                "❮",
+                egui::FontId::proportional(18.0),
+                Color32::WHITE,
+            );
+            if left_btn_resp.clicked() {
+                app.actions.push(Action::PrevStory);
+            }
 
-                let right_bg = if right_btn_resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            let right_bg = if right_btn_resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                if show_arrows_outside {
                     Color32::from_white_alpha(50)
                 } else {
-                    Color32::from_white_alpha(20)
-                };
-                ui.painter()
-                    .circle_filled(right_arrow_rect.center(), 20.0, right_bg);
-                ui.painter().text(
-                    right_arrow_rect.center(),
-                    Align2::CENTER_CENTER,
-                    "❯",
-                    egui::FontId::proportional(18.0),
-                    Color32::WHITE,
-                );
-                if right_btn_resp.clicked() {
-                    app.actions.push(Action::NextStory);
+                    Color32::from_black_alpha(220)
                 }
+            } else if show_arrows_outside {
+                Color32::from_white_alpha(20)
+            } else {
+                Color32::from_black_alpha(150)
+            };
+            ui.painter()
+                .circle_filled(right_arrow_rect.center(), 20.0, right_bg);
+            ui.painter().text(
+                right_arrow_rect.center(),
+                Align2::CENTER_CENTER,
+                "❯",
+                egui::FontId::proportional(18.0),
+                Color32::WHITE,
+            );
+            if right_btn_resp.clicked() {
+                app.actions.push(Action::NextStory);
             }
 
             // Clicking backdrop outside card closes viewer
             if ctx.input(|i| i.pointer.primary_clicked()) {
                 if let Some(pos) = pointer_pos {
-                    if !card_rect.contains(pos) {
-                        let left_arrow = Rect::from_center_size(
-                            pos2(card_rect.left() - 40.0, card_rect.center().y),
-                            vec2(50.0, 50.0),
-                        );
-                        let right_arrow = Rect::from_center_size(
-                            pos2(card_rect.right() + 40.0, card_rect.center().y),
-                            vec2(50.0, 50.0),
-                        );
-                        if !left_arrow.contains(pos) && !right_arrow.contains(pos) {
-                            app.actions.push(Action::CloseStoryViewer);
-                        }
+                    if !card_rect.contains(pos)
+                        && !left_arrow_rect.contains(pos)
+                        && !right_arrow_rect.contains(pos)
+                    {
+                        app.actions.push(Action::CloseStoryViewer);
                     }
                 }
             }

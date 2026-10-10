@@ -1616,9 +1616,15 @@ impl Call {
         // exists and before the peer is rung, because a video call must not silently become voice.
         let mut pipe = None;
         if video {
+            if camera.is_none() && crate::camera::cameras().is_empty() {
+                return Err(anyhow!("no camera is available; a video call needs one"));
+            }
             match VideoPipeline::start(camera.clone()) {
                 Ok((pipeline, frames)) => pipe = Some((pipeline, frames)),
-                Err(error) => log::warn!("[CALL] video pipeline could not start: {error}"),
+                Err(error) => {
+                    log::warn!("[CALL] video pipeline could not start: {error}");
+                    return Err(anyhow!("video could not be started: {error}"));
+                }
             }
         }
         require_video(video, pipe.is_some())?;
@@ -1950,7 +1956,10 @@ impl Call {
         if self.video {
             match VideoPipeline::start(camera.clone()) {
                 Ok((pipeline, frames)) => pipe = Some((pipeline, frames)),
-                Err(error) => log::warn!("[CALL] video pipeline could not start: {error}"),
+                Err(error) => {
+                    log::warn!("[CALL] video pipeline could not start: {error}");
+                    return Err(anyhow!("video could not be started: {error}"));
+                }
             }
         }
         require_video(self.video, pipe.is_some())?;
@@ -3708,9 +3717,9 @@ mod platform_tests {
             capable.voice,
             "rodio carries voice on every platform the app builds for"
         );
-        let linux = cfg!(target_os = "linux");
-        assert_eq!(capable.video, linux, "video needs V4L2 and ffmpeg");
-        assert_eq!(capable.camera, linux, "a camera list is V4L2's");
+        let supported = cfg!(any(target_os = "linux", target_os = "windows"));
+        assert_eq!(capable.video, supported, "video needs a camera and encoder backend");
+        assert_eq!(capable.camera, supported, "a camera list is V4L2's or Media Foundation's");
         assert!(
             !capable.screen_share,
             "one-to-one screen sharing is not in the pinned protocol library"
@@ -3735,11 +3744,14 @@ mod hardware_tests {
             );
         }
         for camera in &list.cameras {
+            #[cfg(target_os = "linux")]
             assert!(
                 camera.id.starts_with("/dev/video"),
                 "a camera is a V4L2 node: {}",
                 camera.id
             );
+            #[cfg(not(target_os = "linux"))]
+            assert!(!camera.id.is_empty(), "a camera has an id: {}", camera.id);
         }
     }
 }

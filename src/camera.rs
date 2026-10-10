@@ -18,6 +18,9 @@
 
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "windows")]
+pub mod windows;
+
 /// What one read attempt did.
 pub enum Read {
     /// A whole frame landed in the buffer.
@@ -38,7 +41,7 @@ const POLL: libc::c_int = 200;
 
 /// Whether this platform can open a camera at all.
 pub fn available() -> bool {
-    cfg!(target_os = "linux")
+    cfg!(any(target_os = "linux", target_os = "windows"))
 }
 
 /// The cameras the platform found, as `(id, label)`.
@@ -50,7 +53,11 @@ pub fn cameras() -> Vec<(String, String)> {
     {
         v4l2::cameras()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::cameras()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         Vec::new()
     }
@@ -63,7 +70,11 @@ pub fn current_size(device: &str) -> Option<(u32, u32)> {
     {
         v4l2::current_size(device)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::current_size(device)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = device;
         None
@@ -80,7 +91,11 @@ pub fn largest_size(device: &str, fps: u32) -> Option<(u32, u32)> {
     {
         v4l2::largest_size(device, fps)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::largest_size(device, fps)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = (device, fps);
         None
@@ -93,7 +108,11 @@ pub fn is_capture(device: &str) -> bool {
     {
         v4l2::is_capture(device)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::is_capture(device)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = device;
         false
@@ -105,7 +124,7 @@ pub fn is_capture(device: &str) -> bool {
 /// Taking it out of the slot first is what lets the capture thread and its caller both ask to end
 /// the camera: neither kills a pid twice, and the one that finds an empty slot reaps nothing and
 /// moves on.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn kill_child(slot: &Mutex<Option<std::process::Child>>) {
     let child = slot
         .lock()
@@ -133,33 +152,60 @@ static STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 /// Production reads the camera node itself. A test proves the fallback really runs, really delivers
 /// frames and really dies through the same spawn, read and cleanup path, using a synthetic source
 /// instead of a camera the build host may not have.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 #[derive(Clone, Debug)]
 enum Input {
+    #[cfg(target_os = "linux")]
     /// A V4L2 node, which is what a call passes.
     Node(String),
-    /// A display screen capture (e.g. :0 or :1) via x11grab.
+    #[cfg(target_os = "windows")]
+    /// A DirectShow device name.
+    Dshow(String),
+    /// A display screen capture (e.g. :0 or :1 on Linux, desktop on Windows).
     Screen(String),
     /// An `ffmpeg` lavfi graph: no node, no camera, and a picture that really moves.
     #[cfg(test)]
     Synthetic(String),
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl Input {
     /// The arguments that say what `ffmpeg` reads.
     fn read_args(&self) -> Vec<String> {
         match self {
+            #[cfg(target_os = "linux")]
             Input::Node(device) => {
                 vec!["-f".to_owned(), "v4l2".into(), "-i".into(), device.clone()]
             }
-            Input::Screen(display) => {
+            #[cfg(target_os = "windows")]
+            Input::Dshow(device) => {
                 vec![
                     "-f".to_owned(),
-                    "x11grab".into(),
+                    "dshow".into(),
                     "-i".into(),
-                    display.clone(),
+                    format!("video={device}"),
                 ]
+            }
+            Input::Screen(display) => {
+                #[cfg(target_os = "linux")]
+                {
+                    vec![
+                        "-f".to_owned(),
+                        "x11grab".into(),
+                        "-i".into(),
+                        display.clone(),
+                    ]
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = display;
+                    vec![
+                        "-f".to_owned(),
+                        "gdigrab".into(),
+                        "-i".into(),
+                        "desktop".into(),
+                    ]
+                }
             }
             #[cfg(test)]
             Input::Synthetic(graph) => {
@@ -172,9 +218,9 @@ impl Input {
 /// The whole command line the fallback runs.
 ///
 /// Built apart from spawning it, so what a call really executes can be read and checked without a
-/// process: the node is read as V4L2, scaled and padded into the encoder's frame, and written to
-/// stdout as raw tightly packed YUV 4:2:0.
-#[cfg(target_os = "linux")]
+/// process: the node is read as V4L2 or DirectShow, scaled and padded into the encoder's frame, and
+/// written to stdout as raw tightly packed YUV 4:2:0.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn ffmpeg_args(input: &Input, size: (usize, usize), fps: u32) -> Vec<String> {
     let (width, height) = size;
     let filter = format!(
@@ -224,9 +270,23 @@ pub enum Source {
     Stub,
 }
 
+/// On Windows a camera is read natively via Media Foundation, or screen capture via GDI, with an
+/// `ffmpeg` fallback.
+#[cfg(target_os = "windows")]
+pub enum Source {
+    Native(windows::Source),
+    Ffmpeg {
+        child: Arc<Mutex<Option<std::process::Child>>>,
+        stdout: std::io::BufReader<std::process::ChildStdout>,
+        budget: (usize, usize),
+    },
+    #[cfg(test)]
+    Stub,
+}
+
 /// A platform with no capture backend: there is no source to read frames from, so this type has no
 /// values and every method below is unreachable by construction.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub enum Source {}
 
 #[cfg(target_os = "linux")]
@@ -371,7 +431,110 @@ impl Source {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+impl Source {
+    /// Opens `device`, trying native Media Foundation first, then falling back to ffmpeg.
+    pub fn open(
+        device: &str,
+        budget: (usize, usize),
+        fps: u32,
+        child: Arc<Mutex<Option<std::process::Child>>>,
+    ) -> Result<Self, String> {
+        match windows::Source::open(device, budget, fps) {
+            Ok(src) => Ok(Source::Native(src)),
+            Err(error) => {
+                log::info!("[CALL] native Windows camera open failed, trying ffmpeg: {error}");
+                Self::start(Input::Dshow(device.to_owned()), budget, fps, child)
+            }
+        }
+    }
+
+    /// Opens desktop screen capture for screen sharing.
+    pub fn open_screen(
+        budget: (usize, usize),
+        fps: u32,
+        child: Arc<Mutex<Option<std::process::Child>>>,
+    ) -> Result<Self, String> {
+        match windows::Source::open_screen(budget, fps) {
+            Ok(src) => Ok(Source::Native(src)),
+            Err(error) => {
+                log::info!("[CALL] native Windows screen capture failed, trying ffmpeg: {error}");
+                Self::start(Input::Screen("desktop".to_owned()), budget, fps, child)
+            }
+        }
+    }
+
+    /// The `ffmpeg` fallback path for Windows.
+    fn start(
+        input: Input,
+        budget: (usize, usize),
+        fps: u32,
+        slot: Arc<Mutex<Option<std::process::Child>>>,
+    ) -> Result<Self, String> {
+        let mut process = std::process::Command::new("ffmpeg")
+            .args(ffmpeg_args(&input, budget, fps))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                format!("the camera could not be read directly and ffmpeg is unavailable: {error}")
+            })?;
+        let Some(stdout) = process.stdout.take() else {
+            let _ = process.kill();
+            let _ = process.wait();
+            return Err("ffmpeg did not provide the camera stream".to_owned());
+        };
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(process);
+        Ok(Source::Ffmpeg {
+            child: slot,
+            stdout: std::io::BufReader::new(stdout),
+            budget,
+        })
+    }
+
+    /// The frame size this source delivers.
+    pub fn size(&self) -> (usize, usize) {
+        match self {
+            Source::Native(native) => native.size(),
+            Source::Ffmpeg { budget, .. } => *budget,
+            #[cfg(test)]
+            Source::Stub => (0, 0),
+        }
+    }
+
+    /// Reads one whole frame into `out`.
+    pub fn read(&mut self, out: &mut [u8]) -> Read {
+        match self {
+            Source::Native(native) => native.read(out),
+            Source::Ffmpeg { stdout, .. } => {
+                match std::io::Read::read_exact(stdout, out) {
+                    Ok(()) => Read::Frame,
+                    Err(_) => Read::Ended,
+                }
+            }
+            #[cfg(test)]
+            Source::Stub => Read::Ended,
+        }
+    }
+
+    /// Ends the capture.
+    pub fn stop(&mut self) {
+        match self {
+            Source::Native(native) => native.stop(),
+            Source::Ffmpeg { child, .. } => kill_child(child),
+            #[cfg(test)]
+            Source::Stub => {}
+        }
+    }
+
+    /// Reaps the child once the capture loop has ended.
+    pub fn reap(&mut self) {
+        self.stop();
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 impl Source {
     /// A platform with no capture backend has no camera to open, and says so rather than handing
     /// back a source that would never deliver a frame.
@@ -1202,44 +1365,133 @@ mod v4l2 {
         }
     }
 
-    /// Converts one packed YUYV frame into the tightly packed YUV 4:2:0 the encoder takes.
-    ///
-    /// A YUYV row is `Y0 U Y1 V` pairs, two pixels to four bytes, so luma is copied row by row from
-    /// the driver's stride and each output chroma sample is the average of the two pairs covering
-    /// its 2x2 block, which keeps colour aligned with the luma it belongs to. Rows the driver did
-    /// not fill are left as they are rather than read past the end of the buffer.
-    pub(super) fn to_yuv420(
-        source: &[u8],
-        stride: usize,
-        width: usize,
-        height: usize,
-        out: &mut [u8],
-    ) {
-        let (y_len, chroma_len) = (width * height, width * height / 4);
-        let (luma, chroma) = out.split_at_mut(y_len);
-        let (u_plane, v_plane) = chroma.split_at_mut(chroma_len);
-        let rows = height.min(source.len() / stride.max(1));
-        for row in 0..rows {
-            let from = row * stride;
-            let to = row * width;
-            for column in 0..width {
-                luma[to + column] = source[from + column * 2];
-            }
+    pub(super) use super::to_yuv420;
+}
+
+/// Converts one packed YUYV / YUY2 frame into the tightly packed YUV 4:2:0 the encoder takes.
+///
+/// A YUYV row is `Y0 U Y1 V` pairs, two pixels to four bytes, so luma is copied row by row from
+/// the driver's stride and each output chroma sample is the average of the two pairs covering
+/// its 2x2 block, which keeps colour aligned with the luma it belongs to. Rows the driver did
+/// not fill are left as they are rather than read past the end of the buffer.
+pub(crate) fn to_yuv420(
+    source: &[u8],
+    stride: usize,
+    width: usize,
+    height: usize,
+    out: &mut [u8],
+) {
+    let (y_len, chroma_len) = (width * height, width * height / 4);
+    let (luma, chroma) = out.split_at_mut(y_len);
+    let (u_plane, v_plane) = chroma.split_at_mut(chroma_len);
+    let rows = height.min(source.len() / stride.max(1));
+    for row in 0..rows {
+        let from = row * stride;
+        let to = row * width;
+        for column in 0..width {
+            luma[to + column] = source[from + column * 2];
         }
-        let pairs = width / 2;
-        for row in 0..rows / 2 {
-            let top = row * 2 * stride;
-            let bottom = top + stride;
-            let to = row * pairs;
-            for pair in 0..pairs {
-                let at = pair * 4;
-                let u_top = u16::from(source[top + at + 1]);
-                let u_bottom = u16::from(source[bottom + at + 1]);
-                let v_top = u16::from(source[top + at + 3]);
-                let v_bottom = u16::from(source[bottom + at + 3]);
-                u_plane[to + pair] = ((u_top + u_bottom) / 2) as u8;
-                v_plane[to + pair] = ((v_top + v_bottom) / 2) as u8;
+    }
+    let pairs = width / 2;
+    for row in 0..rows / 2 {
+        let top = row * 2 * stride;
+        let bottom = top + stride;
+        let to = row * pairs;
+        for pair in 0..pairs {
+            let at = pair * 4;
+            let u_top = u16::from(source[top + at + 1]);
+            let u_bottom = u16::from(source[bottom + at + 1]);
+            let v_top = u16::from(source[top + at + 3]);
+            let v_bottom = u16::from(source[bottom + at + 3]);
+            u_plane[to + pair] = ((u_top + u_bottom) / 2) as u8;
+            v_plane[to + pair] = ((v_top + v_bottom) / 2) as u8;
+        }
+    }
+}
+
+/// Converts one NV12 frame into the tightly packed YUV 4:2:0 (I420) planar layout.
+pub(crate) fn to_yuv420_from_nv12(
+    source: &[u8],
+    width: usize,
+    height: usize,
+    out: &mut [u8],
+) {
+    let y_len = width * height;
+    let chroma_len = y_len / 4;
+    let (luma, chroma) = out.split_at_mut(y_len);
+    let (u_plane, v_plane) = chroma.split_at_mut(chroma_len);
+
+    let y_source = &source[..y_len.min(source.len())];
+    luma[..y_source.len()].copy_from_slice(y_source);
+
+    let uv_source = if source.len() > y_len {
+        &source[y_len..]
+    } else {
+        &[]
+    };
+    let uv_pairs = (width / 2) * (height / 2);
+    for i in 0..uv_pairs {
+        if i * 2 + 1 < uv_source.len() {
+            u_plane[i] = uv_source[i * 2];
+            v_plane[i] = uv_source[i * 2 + 1];
+        }
+    }
+}
+
+/// Converts one 32-bit RGB/BGRA frame into tightly packed YUV 4:2:0.
+pub(crate) fn to_yuv420_from_rgb(
+    source: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    is_bgra: bool,
+    out: &mut [u8],
+) {
+    let y_len = width * height;
+    let chroma_len = y_len / 4;
+    let (luma, chroma) = out.split_at_mut(y_len);
+    let (u_plane, v_plane) = chroma.split_at_mut(chroma_len);
+
+    let get_rgb = |row: usize, col: usize| -> (u8, u8, u8) {
+        let offset = row * stride + col * 4;
+        if offset + 3 <= source.len() {
+            if is_bgra {
+                (source[offset + 2], source[offset + 1], source[offset])
+            } else {
+                (source[offset], source[offset + 1], source[offset + 2])
             }
+        } else {
+            (0, 0, 0)
+        }
+    };
+
+    for row in 0..height {
+        let to_row = row * width;
+        for col in 0..width {
+            let (r, g, b) = get_rgb(row, col);
+            let y = ((77 * r as i32 + 150 * g as i32 + 29 * b as i32) >> 8) as u8;
+            luma[to_row + col] = y;
+        }
+    }
+
+    let pairs_w = width / 2;
+    let pairs_h = height / 2;
+    for row in 0..pairs_h {
+        let to_row = row * pairs_w;
+        for col in 0..pairs_w {
+            let r0 = row * 2;
+            let c0 = col * 2;
+            let (r1, g1, b1) = get_rgb(r0, c0);
+            let (r2, g2, b2) = get_rgb(r0, c0 + 1);
+            let (r3, g3, b3) = get_rgb(r0 + 1, c0);
+            let (r4, g4, b4) = get_rgb(r0 + 1, c0 + 1);
+            let r = ((r1 as u32 + r2 as u32 + r3 as u32 + r4 as u32) / 4) as i32;
+            let g = ((g1 as u32 + g2 as u32 + g3 as u32 + g4 as u32) / 4) as i32;
+            let b = ((b1 as u32 + b2 as u32 + b3 as u32 + b4 as u32) / 4) as i32;
+            let u = (((-43 * r - 85 * g + 128 * b) >> 8) + 128).clamp(0, 255) as u8;
+            let v = (((128 * r - 107 * g - 21 * b) >> 8) + 128).clamp(0, 255) as u8;
+            u_plane[to_row + col] = u;
+            v_plane[to_row + col] = v;
         }
     }
 }
@@ -1257,6 +1509,35 @@ mod tests {
                 width * height + width * height / 4 * 2
             );
         }
+    }
+
+    #[test]
+    fn nv12_frame_is_converted_to_i420() {
+        // 4x2 frame: 8 luma bytes, 4 chroma bytes (interleaved UV)
+        let mut source = vec![
+            10, 20, 30, 40,
+            50, 60, 70, 80,
+            100, 200, 110, 210, // U0, V0, U1, V1
+        ];
+        let mut out = vec![0u8; 4 * 2 * 3 / 2];
+        to_yuv420_from_nv12(&source, 4, 2, &mut out);
+        assert_eq!(&out[..8], &[10, 20, 30, 40, 50, 60, 70, 80]);
+        assert_eq!(&out[8..10], &[100, 110]); // U plane
+        assert_eq!(&out[10..12], &[200, 210]); // V plane
+    }
+
+    #[test]
+    fn rgb_frame_is_converted_to_yuv420() {
+        // 2x2 frame, pure black then pure white
+        let source = vec![
+            0, 0, 0, 255,     255, 255, 255, 255,
+            0, 0, 0, 255,     255, 255, 255, 255,
+        ];
+        let mut out = vec![0u8; 2 * 2 * 3 / 2];
+        to_yuv420_from_rgb(&source, 2, 2, 8, false, &mut out);
+        // Black pixel has Y close to 0, white pixel has Y close to 255
+        assert_eq!(out[0], 0);
+        assert!(out[1] > 200);
     }
 
     /// The choice between the two capture paths, decided from the driver's formats alone.
