@@ -81,15 +81,17 @@ pub fn cameras() -> Vec<(String, String)> {
 
 /// Helper to read allocated wide string from an attribute store.
 unsafe fn get_attribute_string(attrs: &IMFAttributes, guid: &GUID) -> Option<String> {
-    let mut pwstr = PWSTR(std::ptr::null_mut());
-    let mut len = 0u32;
-    if attrs.GetAllocatedString(guid, &mut pwstr, &mut len).is_ok() && !pwstr.0.is_null() {
-        let slice = std::slice::from_raw_parts(pwstr.0, len as usize);
-        let s = String::from_utf16(slice).ok();
-        CoTaskMemFree(Some(pwstr.0.cast()));
-        s
-    } else {
-        None
+    unsafe {
+        let mut pwstr = PWSTR(std::ptr::null_mut());
+        let mut len = 0u32;
+        if attrs.GetAllocatedString(guid, &mut pwstr, &mut len).is_ok() && !pwstr.0.is_null() {
+            let slice = std::slice::from_raw_parts(pwstr.0, len as usize);
+            let s = String::from_utf16(slice).ok();
+            CoTaskMemFree(Some(pwstr.0.cast()));
+            s
+        } else {
+            None
+        }
     }
 }
 
@@ -204,7 +206,7 @@ impl MfSource {
                     let packed: u64 = ((budget.0 as u64) << 32) | (budget.1 as u64);
                     let _ = mt.SetUINT64(&MF_MT_FRAME_SIZE, packed);
                     if reader
-                        .SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, None, &mt)
+                        .SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, None, &mt)
                         .is_ok()
                     {
                         is_yuy2 = is_yuy;
@@ -215,7 +217,7 @@ impl MfSource {
             }
 
             if !set_success {
-                if let Ok(ct) = reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM) {
+                if let Ok(ct) = reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32) {
                     if let Ok(packed) = ct.GetUINT64(&MF_MT_FRAME_SIZE) {
                         let w = (packed >> 32) as usize;
                         let h = (packed & 0xFFFF_FFFF) as usize;
@@ -248,7 +250,7 @@ impl MfSource {
             let mut stream_flags: u32 = 0;
             let mut sample: Option<IMFSample> = None;
             let res = self.reader.ReadSample(
-                MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
                 0,
                 None,
                 Some(&mut stream_flags),
@@ -258,7 +260,7 @@ impl MfSource {
             if res.is_err() {
                 return Read::Ended;
             }
-            if (stream_flags & MF_SOURCE_READERF_ENDOFSTREAM.0) != 0 {
+            if (stream_flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32)) != 0 {
                 return Read::Ended;
             }
             let Some(sample) = sample else {
@@ -317,25 +319,25 @@ impl GdiScreenSource {
     /// Opens the desktop display for screen capture.
     pub fn open(budget: (usize, usize), _fps: u32) -> Result<Self, String> {
         unsafe {
-            let hdc_screen = GetDC(HWND::default());
+            let hdc_screen = GetDC(Some(HWND::default()));
             if hdc_screen.0.is_null() {
                 return Err("GetDC failed".to_owned());
             }
-            let screen_w = GetDeviceCaps(hdc_screen, HORZRES);
-            let screen_h = GetDeviceCaps(hdc_screen, VERTRES);
-            let hdc_mem = CreateCompatibleDC(hdc_screen);
+            let screen_w = GetDeviceCaps(Some(hdc_screen), HORZRES);
+            let screen_h = GetDeviceCaps(Some(hdc_screen), VERTRES);
+            let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
             if hdc_mem.0.is_null() {
-                ReleaseDC(HWND::default(), hdc_screen);
+                ReleaseDC(Some(HWND::default()), hdc_screen);
                 return Err("CreateCompatibleDC failed".to_owned());
             }
             let (w, h) = budget;
             let hbitmap = CreateCompatibleBitmap(hdc_screen, w as i32, h as i32);
             if hbitmap.0.is_null() {
                 DeleteDC(hdc_mem);
-                ReleaseDC(HWND::default(), hdc_screen);
+                ReleaseDC(Some(HWND::default()), hdc_screen);
                 return Err("CreateCompatibleBitmap failed".to_owned());
             }
-            SelectObject(hdc_mem, hbitmap);
+            SelectObject(hdc_mem, hbitmap.into());
             let raw_buffer = vec![0u8; w * h * 4];
             Ok(Self {
                 hdc_screen,
@@ -362,7 +364,7 @@ impl GdiScreenSource {
                 0,
                 self.size.0 as i32,
                 self.size.1 as i32,
-                self.hdc_screen,
+                Some(self.hdc_screen),
                 0,
                 0,
                 self.screen_size.0,
@@ -407,13 +409,13 @@ impl GdiScreenSource {
         if !self.stopped.swap(true, Ordering::Relaxed) {
             unsafe {
                 if !self.hbitmap.0.is_null() {
-                    let _ = DeleteObject(self.hbitmap);
+                    let _ = DeleteObject(self.hbitmap.into());
                 }
                 if !self.hdc_mem.0.is_null() {
                     let _ = DeleteDC(self.hdc_mem);
                 }
                 if !self.hdc_screen.0.is_null() {
-                    ReleaseDC(HWND::default(), self.hdc_screen);
+                    ReleaseDC(Some(HWND::default()), self.hdc_screen);
                 }
             }
         }
