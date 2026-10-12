@@ -15,21 +15,32 @@ pub struct Geometry {
     pub maximized: bool,
 }
 
+/// Minimum sensible width and height for a normal ZapFast desktop window.
+pub const MIN_WIDTH: f32 = 400.0;
+pub const MIN_HEIGHT: f32 = 300.0;
+pub const MAX_DIMENSION: f32 = 16_384.0;
+
 impl Geometry {
-    /// Whether `value` is a usable window dimension.
-    fn sane_size(value: f32) -> bool {
-        value.is_finite() && value > 0.0 && value <= 16_384.0
+    /// Whether `width` is a usable window dimension.
+    pub fn sane_width(width: f32) -> bool {
+        width.is_finite() && width >= MIN_WIDTH && width <= MAX_DIMENSION
+    }
+
+    /// Whether `height` is a usable window height.
+    pub fn sane_height(height: f32) -> bool {
+        height.is_finite() && height >= MIN_HEIGHT && height <= MAX_DIMENSION
     }
 
     /// Whether `value` is a usable window coordinate.
-    fn sane_position(value: f32) -> bool {
-        value.is_finite() && value.abs() <= 32_768.0
+    pub fn sane_position(value: f32) -> bool {
+        // Minimized windows on Windows are parked at -32000, which must be rejected.
+        value.is_finite() && value > -10_000.0 && value < 30_000.0
     }
 
     /// The remembered inner size, if both dimensions are usable.
     pub fn size(self) -> Option<[f32; 2]> {
         match (self.width, self.height) {
-            (Some(width), Some(height)) if Self::sane_size(width) && Self::sane_size(height) => {
+            (Some(width), Some(height)) if Self::sane_width(width) && Self::sane_height(height) => {
                 Some([width, height])
             }
             _ => None,
@@ -73,12 +84,39 @@ impl Snapshot {
         })
     }
 
+    /// Whether the snapshot represents a minimized, offscreen-parked, or collapsing window.
+    pub fn is_minimized_or_unusable(&self) -> bool {
+        if self.minimized == Some(true) || self.fullscreen == Some(true) {
+            return true;
+        }
+        // Parked offscreen coordinates (e.g. Windows iconic parking at -32000).
+        if let Some(outer) = self.outer {
+            if !Geometry::sane_position(outer.min.x) || !Geometry::sane_position(outer.min.y) {
+                return true;
+            }
+        }
+        if let Some(inner) = self.inner {
+            if !Geometry::sane_position(inner.min.x) || !Geometry::sane_position(inner.min.y) {
+                return true;
+            }
+            if inner.width() < MIN_WIDTH || inner.height() < MIN_HEIGHT {
+                return true;
+            }
+        }
+        if let Some(screen) = self.screen {
+            if screen.width() < MIN_WIDTH || screen.height() < MIN_HEIGHT {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Folds the snapshot into the settings. Returns whether anything
-    /// changed. Skipped while minimized or fullscreen, which carry no normal
+    /// changed. Skipped while minimized, parked, or fullscreen, which carry no normal
     /// geometry. The position stays untouched where the compositor owns it
     /// (Wayland), while the size is still remembered through the screen rect.
     pub fn remember(self, settings: &mut crate::settings::Settings) -> bool {
-        if self.minimized == Some(true) || self.fullscreen == Some(true) {
+        if self.is_minimized_or_unusable() {
             return false;
         }
         let mut changed = false;
@@ -98,10 +136,8 @@ impl Snapshot {
             .map(|rect| rect.size())
             .or_else(|| self.screen.map(|rect| rect.size()));
         if let Some(size) = size
-            && size.x.is_finite()
-            && size.y.is_finite()
-            && size.x > 0.0
-            && size.y > 0.0
+            && Geometry::sane_width(size.x)
+            && Geometry::sane_height(size.y)
             && (settings
                 .window_width
                 .is_none_or(|w| (w - size.x).abs() > 0.5)
@@ -128,8 +164,8 @@ impl Snapshot {
             (None, None) => None,
         };
         if let Some(pos) = pos
-            && pos.x.is_finite()
-            && pos.y.is_finite()
+            && Geometry::sane_position(pos.x)
+            && Geometry::sane_position(pos.y)
             && (settings.window_x.is_none_or(|x| (x - pos.x).abs() > 0.5)
                 || settings.window_y.is_none_or(|y| (y - pos.y).abs() > 0.5))
         {
@@ -232,6 +268,16 @@ mod tests {
                 ..Geometry::default()
             },
             Geometry {
+                width: Some(100.0),
+                height: Some(800.0),
+                ..Geometry::default()
+            },
+            Geometry {
+                width: Some(1280.0),
+                height: Some(50.0),
+                ..Geometry::default()
+            },
+            Geometry {
                 width: Some(1280.0),
                 height: Some(f32::INFINITY),
                 ..Geometry::default()
@@ -253,6 +299,11 @@ mod tests {
             Geometry {
                 x: Some(100.0),
                 y: None,
+                ..Geometry::default()
+            },
+            Geometry {
+                x: Some(-32000.0),
+                y: Some(50.0),
                 ..Geometry::default()
             },
         ] {
@@ -352,6 +403,27 @@ mod tests {
             !snapshot(Some(maximized_inner), None, None, None, Some(true), None)
                 .remember(&mut settings)
         );
+
+        // A parked or collapsing window (e.g. Windows -32000 parking or tiny 160x24 rect)
+        // is ignored even if minimized flag is not set, preserving normal geometry and maximized state.
+        settings.window_maximized = true;
+        let parked_outer = egui::Rect::from_min_size(
+            egui::pos2(-32000.0, -32000.0),
+            egui::vec2(160.0, 24.0),
+        );
+        assert!(
+            !snapshot(None, Some(parked_outer), None, Some(false), None, None)
+                .remember(&mut settings)
+        );
+        assert!(settings.window_maximized);
+        assert_eq!(settings.window_width, Some(1280.0));
+
+        let tiny_inner = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(160.0, 24.0));
+        assert!(
+            !snapshot(Some(tiny_inner), None, None, None, None, None)
+                .remember(&mut settings)
+        );
+        assert_eq!(settings.window_width, Some(1280.0));
     }
 
     /// Without a viewport position (Wayland) the size is still remembered
