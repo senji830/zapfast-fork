@@ -46,6 +46,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) -> Option<Rect> {
     let palette = app.palette;
     let max = (region.width() - CONVERSATION_MIN).clamp(MIN_WIDTH, MAX_WIDTH);
     let wanted = app.settings.search_pane_width.clamp(MIN_WIDTH, max);
+    let t = ui.ctx().animate_bool_with_time(egui::Id::new("chat-search-pane-anim"), app.chat_search_visible(), 0.16);
     let id = egui::Id::new("chat-search-pane");
     // egui would remember a width a narrow window squeezed; the saved width
     // is the reader's, so it comes back when the window widens again.
@@ -57,12 +58,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) -> Option<Rect> {
         .size_range(MIN_WIDTH..=max)
         .show_separator_line(false)
         .frame(Frame::new().fill(palette.panel).inner_margin(Margin::ZERO))
-        .show(ui, |ui| search(app, ui, false));
+        .show(ui, |ui| {
+            ui.set_opacity(t);
+            search(app, ui, false);
+        });
     let rect = response.response.rect;
     ui.painter().vline(
         rect.left(),
         rect.y_range(),
-        Stroke::new(1.0, palette.outline),
+        Stroke::new(1.0, palette.outline.gamma_multiply(t)),
     );
     // Only a drag moves the edge off the width asked for.
     if (rect.width() - wanted).abs() > 1.0 {
@@ -80,12 +84,15 @@ pub fn show_overlay(app: &mut App, ctx: &egui::Context, region: Rect) {
         .search_pane_width
         .clamp(MIN_WIDTH, MAX_WIDTH)
         .min(region.width());
-    let rect = Rect::from_min_max(pos2(region.right() - width, region.top()), region.max);
+    let t = ctx.animate_bool_with_time(egui::Id::new("chat-search-overlay-anim"), app.chat_search_visible(), 0.16);
+    let slide_x = (1.0 - t) * (width * 0.4);
+    let rect = Rect::from_min_max(pos2(region.right() - width + slide_x, region.top()), region.max);
     egui::Area::new(egui::Id::new("chat-search-overlay"))
         .order(egui::Order::Middle)
         .fixed_pos(rect.min)
         .constrain(false)
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             ui.set_clip_rect(rect.expand2(vec2(24.0, 0.0)));
             Frame::new()
                 .fill(palette.panel)
@@ -93,7 +100,7 @@ pub fn show_overlay(app: &mut App, ctx: &egui::Context, region: Rect) {
                     offset: [-4, 0],
                     blur: 16,
                     spread: 0,
-                    color: palette.shadow,
+                    color: palette.shadow.gamma_multiply(t),
                 })
                 .show(ui, |ui| {
                     ui.set_min_size(rect.size());
@@ -103,7 +110,7 @@ pub fn show_overlay(app: &mut App, ctx: &egui::Context, region: Rect) {
             ui.painter().vline(
                 rect.left(),
                 rect.y_range(),
-                Stroke::new(1.0, palette.outline),
+                Stroke::new(1.0, palette.outline.gamma_multiply(t)),
             );
         });
 }

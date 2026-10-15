@@ -104,11 +104,13 @@ fn menu(app: &mut App, button: &egui::Response) {
         egui::Popup::open_id(&button.ctx, popup_id);
     }
     let entries = entries(app);
+    let t = button.ctx.animate_bool_with_time(popup_id.with("anim"), true, 0.15);
     egui::Popup::menu(button)
         .id(popup_id)
         .width(MENU_WIDTH)
         .frame(widgets::menu_frame(&palette))
         .show(|ui| {
+            ui.set_opacity(t);
             for entry in &entries {
                 if account_row(app, ui, entry) && !entry.current {
                     app.actions.push(Action::SwitchAccount(entry.id.clone()));

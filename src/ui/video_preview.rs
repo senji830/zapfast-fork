@@ -29,13 +29,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     app.video.saw(&message);
     let screen = ctx.content_rect();
     let mut actions = Vec::new();
+    let t = ctx.animate_bool_with_time(egui::Id::new("video-preview-anim"), app.video_expanded, 0.16);
     egui::Area::new(egui::Id::new("video-preview"))
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             let (rect, backdrop) = ui.allocate_exact_size(screen.size(), Sense::click());
             ui.painter()
-                .rect_filled(rect, 0.0, Color32::from_black_alpha(238));
+                .rect_filled(rect, 0.0, Color32::from_black_alpha((238.0 * t) as u8));
             let room = rect.shrink(MARGIN);
             let shape = status
                 .frame

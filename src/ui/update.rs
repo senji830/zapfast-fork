@@ -15,9 +15,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     };
     let palette = app.palette;
     let mut close = false;
+    let t = ctx.animate_bool_with_time(egui::Id::new("update-modal-anim"), app.show_update, 0.16);
     let frame = Frame::new()
-        .fill(palette.overlay)
-        .stroke(Stroke::new(1.0, palette.outline))
+        .fill(palette.overlay.gamma_multiply(t))
+        .stroke(Stroke::new(1.0, palette.outline.gamma_multiply(t)))
         .corner_radius(CornerRadius::same(theme::RADIUS + 4))
         .inner_margin(Margin::same(22))
         .shadow(palette.modal_shadow());
@@ -30,6 +31,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         .default_width(420.0)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             ui.set_width(420.0_f32.min((ctx.content_rect().width() - 64.0).max(240.0)));
             ui.horizontal(|ui| {
                 theme::text(ui, "Update ZapFast", theme::bold(20.0), palette.text);

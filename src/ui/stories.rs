@@ -768,15 +768,18 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
     };
 
     // Full screen overlay area
+    let is_open = app.story_viewer.is_some();
+    let t = ctx.animate_bool_with_time(egui::Id::new("story-viewer-surface-anim"), is_open, 0.18);
     egui::Area::new(egui::Id::new("story-viewer-surface"))
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             ui.set_min_size(screen.size());
 
             // Dark backdrop
             ui.painter()
-                .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(240));
+                .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha((240.0 * t) as u8));
 
             // Background of the story
             let bg_color = match &current_item.media_type {
@@ -1446,22 +1449,28 @@ pub fn viewer_show_in(app: &mut App, ctx: &egui::Context, bounds: Option<Rect>) 
 
 /// Modal dialog for composing and posting a new text status to WhatsApp.
 pub fn post_modal_show(app: &mut App, ctx: &egui::Context) {
+    let is_open = app.post_story_open;
+    let t = ctx.animate_bool_with_time(egui::Id::new("post-story-modal-anim"), is_open, 0.16);
+    if !is_open && t <= 0.0 {
+        return;
+    }
     if !app.post_story_open {
         return;
     }
 
     let palette = app.palette;
     let frame = Frame::new()
-        .fill(palette.overlay)
-        .stroke(Stroke::new(1.0, palette.outline))
+        .fill(palette.overlay.gamma_multiply(t))
+        .stroke(Stroke::new(1.0, palette.outline.gamma_multiply(t)))
         .corner_radius(CornerRadius::same(theme::RADIUS + 4))
         .inner_margin(Margin::same(20))
         .shadow(palette.modal_shadow());
 
     let response = egui::Modal::new(egui::Id::new("post-story-modal"))
         .frame(frame)
-        .backdrop_color(palette.shadow)
+        .backdrop_color(palette.shadow.gamma_multiply(t))
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             ui.set_width(420.0);
 
             // Header row

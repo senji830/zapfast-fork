@@ -25,17 +25,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             _ => None,
         })
     });
+    let is_open = app.image_preview.is_some();
+    let t = ctx.animate_bool_with_time(egui::Id::new("image-preview-anim"), is_open, 0.16);
     let frame = Frame::new()
-        .fill(palette.overlay)
-        .stroke(Stroke::new(1.0, palette.outline))
+        .fill(palette.overlay.gamma_multiply(t))
+        .stroke(Stroke::new(1.0, palette.outline.gamma_multiply(t)))
         .corner_radius(CornerRadius::same(theme::RADIUS + 4))
         .inner_margin(Margin::same(14))
         .shadow(palette.modal_shadow());
     let viewport = ctx.content_rect().size();
     let response = egui::Modal::new(egui::Id::new("image-preview"))
         .frame(frame)
-        .backdrop_color(palette.shadow)
+        .backdrop_color(palette.shadow.gamma_multiply(t))
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             ui.set_width((viewport.x * 0.9).clamp(viewport.x.min(320.0), 1200.0));
             ui.set_height((viewport.y * 0.88).clamp(viewport.y.min(260.0), 900.0));
             ui.horizontal(|ui| {

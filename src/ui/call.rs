@@ -61,10 +61,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         inset => screen.with_min_y(screen.top() + inset),
     };
 
+    let t = ctx.animate_bool_with_time(egui::Id::new("call-surface-anim"), true, 0.18);
     egui::Area::new(egui::Id::new(SURFACE))
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             ui.set_min_size(screen.size());
             egui::Frame::new()
                 .fill(surface_color(&palette, &call))
@@ -779,18 +781,20 @@ fn devices(ui: &mut egui::Ui, app: &mut App, call: &CallUpdate) {
     let spacing = 16.0;
     let content_width = picker_count * picker_width + (picker_count - 1.0) * spacing;
 
+    let t = ui.ctx().animate_bool_with_time(egui::Id::new("call-devices-anim"), true, 0.15);
     egui::Frame::new()
-        .fill(Color32::from_rgba_premultiplied(24, 28, 34, 245))
+        .fill(Color32::from_rgba_premultiplied(24, 28, 34, (245.0 * t) as u8))
         .corner_radius(CornerRadius::same(18))
-        .stroke(egui::Stroke::new(1.0, Color32::from_white_alpha(45)))
+        .stroke(egui::Stroke::new(1.0, Color32::from_white_alpha((45.0 * t) as u8)))
         .inner_margin(egui::Margin::symmetric(22, 16))
         .shadow(egui::epaint::Shadow {
             offset: [0, 6],
             blur: 20,
             spread: 0,
-            color: Color32::from_black_alpha(100),
+            color: Color32::from_black_alpha((100.0 * t) as u8),
         })
         .show(ui, |ui| {
+            ui.set_opacity(t);
             ui.allocate_ui_with_layout(
                 vec2(content_width, 0.0),
                 Layout::top_down(Align::Min),

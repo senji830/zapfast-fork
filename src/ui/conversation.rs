@@ -1655,6 +1655,7 @@ fn composer_tools_menu(app: &mut App, chat: &Chat, plus: &egui::Response) {
     }
     let mut draw_open = open;
     if draw_open && !picker_open {
+        let t = plus.ctx.animate_bool_with_time(id.with("anim"), draw_open, 0.15);
         egui::Popup::menu(plus)
             .id(id)
             .open_bool(&mut draw_open)
@@ -1662,6 +1663,7 @@ fn composer_tools_menu(app: &mut App, chat: &Chat, plus: &egui::Response) {
             .width(190.0)
             .frame(widgets::menu_frame(&app.palette))
             .show(|ui| {
+                ui.set_opacity(t);
                 let send_files = crate::i18n::gettext(app.locale, "Send files");
                 if widgets::menu_item(ui, &app.palette, Some(Icon::Paperclip), &send_files) {
                     app.actions.push(Action::Attach);

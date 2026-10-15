@@ -9,20 +9,27 @@ use crate::model::{Action, Dialog};
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
+    let is_open = app.dialog.is_some();
+    let t = ctx.animate_bool_with_time(egui::Id::new("dialog_modal_anim"), is_open, 0.16);
+    if !is_open && t <= 0.0 {
+        return;
+    }
     let Some(dialog) = app.dialog.clone() else {
         return;
     };
     let palette = app.palette;
     let frame = Frame::new()
-        .fill(palette.overlay)
-        .stroke(Stroke::new(1.0, palette.outline))
+        .fill(palette.overlay.gamma_multiply(t))
+        .stroke(Stroke::new(1.0, palette.outline.gamma_multiply(t)))
         .corner_radius(CornerRadius::same(theme::RADIUS + 4))
         .inner_margin(Margin::same(22))
         .shadow(palette.modal_shadow());
+    let backdrop = palette.shadow.gamma_multiply(t);
     let response = egui::Modal::new(egui::Id::new("dialog"))
         .frame(frame)
-        .backdrop_color(palette.shadow)
+        .backdrop_color(backdrop)
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             ui.set_width(match dialog {
                 Dialog::Shortcuts => shortcuts_width(ui.ctx().content_rect().width()),
                 Dialog::About => 380.0,

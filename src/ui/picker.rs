@@ -53,17 +53,21 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         return;
     };
     let screen = ctx.content_rect();
+    let is_open = app.picker.is_some();
+    let t = ctx.animate_bool_with_time(egui::Id::new("picker_anim"), is_open, 0.16);
+    let slide_y = (1.0 - t) * 14.0;
     let x = anchor
         .left()
         .clamp(screen.left() + 8.0, (screen.right() - WIDTH - 8.0).max(8.0));
-    let y = (anchor.top() - HEIGHT - 10.0).max(screen.top() + 8.0);
+    let y = (anchor.top() - HEIGHT - 10.0).max(screen.top() + 8.0) + slide_y;
     let area = egui::Area::new(egui::Id::new("picker"))
         .fixed_pos(pos2(x, y))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             Frame::new()
-                .fill(palette.overlay)
-                .stroke(Stroke::new(1.0, palette.outline))
+                .fill(palette.overlay.gamma_multiply(t))
+                .stroke(Stroke::new(1.0, palette.outline.gamma_multiply(t)))
                 .corner_radius(CornerRadius::same(theme::RADIUS + 4))
                 .inner_margin(Margin::same(10))
                 .shadow(palette.float_shadow())
@@ -410,18 +414,23 @@ fn reaction_picker(app: &mut App, ctx: &egui::Context) {
         .get(&chat)
         .and_then(|conversation| conversation.message(&message))
         .map(|message| (app.display_name(&message.sender), message.content.summary()));
+    let is_open = app.reaction_target.is_some();
+    let t = ctx.animate_bool_with_time(egui::Id::new("reaction-picker-anim"), is_open, 0.15);
+    let slide_y = (1.0 - t) * 10.0;
+    let anim_pos = pos2(pos.x, pos.y + slide_y);
     let area = egui::Area::new(egui::Id::new("reaction-picker"))
-        .fixed_pos(pos)
+        .fixed_pos(anim_pos)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
+            ui.set_opacity(t);
             // Picker chrome stays LTR even in RTL chats, matching WhatsApp.
             ui.allocate_ui_with_layout(
                 vec2(outer_width, outer_height),
                 Layout::top_down(Align::Min),
                 |ui| {
                     Frame::new()
-                        .fill(palette.overlay)
-                        .stroke(Stroke::new(1.0, palette.outline))
+                        .fill(palette.overlay.gamma_multiply(t))
+                        .stroke(Stroke::new(1.0, palette.outline.gamma_multiply(t)))
                         .corner_radius(CornerRadius::same(theme::RADIUS + 4))
                         .inner_margin(Margin::same(FRAME_MARGIN))
                         .shadow(palette.float_shadow())

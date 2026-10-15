@@ -657,6 +657,8 @@ pub struct App {
     wants_attention: bool,
     /// Whether ZapFast starts at login, when this installation supports it.
     pub start_with_system: Option<bool>,
+    /// When the active page or active chat was opened, for lightweight opening transitions.
+    pub page_switched_at: Instant,
     /// Cross-thread window repaint handle.
     waker: Waker,
     tray: Option<fastframe_tray::Tray>,
@@ -1228,6 +1230,7 @@ impl App {
             call_repaint: false,
             wants_attention: false,
             start_with_system: None,
+            page_switched_at: Instant::now(),
             waker,
             tray: None,
             #[cfg(test)]
@@ -4143,6 +4146,7 @@ impl App {
         self.mention_start = None;
         self.open_chat = Some(id.clone());
         self.page = Page::Chats;
+        self.page_switched_at = Instant::now();
         self.scroll_to_bottom = true;
         self.at_bottom = true;
         self.focus_composer = true;
@@ -4821,6 +4825,7 @@ impl App {
                     self.app_lock.form = None;
                 }
                 self.page = page;
+                self.page_switched_at = Instant::now();
                 self.dialog = None;
                 self.emoji_start = None;
                 self.mention_start = None;

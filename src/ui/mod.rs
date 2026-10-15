@@ -134,12 +134,20 @@ fn main_view(app: &mut App, ui: &mut egui::Ui, list_only: bool) {
     let search_overlay = pane::show(app, ui);
     egui::CentralPanel::default()
         .frame(central_frame(app))
-        .show(ui, |ui| match app.page {
-            Page::Settings => settings::show(app, ui),
-            Page::Chats => conversation::show(app, ui),
-            Page::Stories => stories_page::show(app, ui),
-            Page::Calls => calls_page::show(app, ui),
-            Page::Wallpaper => settings::wallpaper_show(app, ui),
+        .show(ui, |ui| {
+            let age = app.page_switched_at.elapsed().as_secs_f32();
+            let t = (age / 0.14).min(1.0);
+            if t < 1.0 {
+                ui.ctx().request_repaint();
+            }
+            ui.set_opacity(t);
+            match app.page {
+                Page::Settings => settings::show(app, ui),
+                Page::Chats => conversation::show(app, ui),
+                Page::Stories => stories_page::show(app, ui),
+                Page::Calls => calls_page::show(app, ui),
+                Page::Wallpaper => settings::wallpaper_show(app, ui),
+            }
         });
     if let Some(region) = search_overlay {
         pane::show_overlay(app, ui.ctx(), region);
